@@ -434,9 +434,9 @@ app.use((err, req, res, next) => {
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 UAlbany Shuttle API running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready`);
-  console.log(`🔄 Scheduled tasks activated`);
+  console.log(` UAlbany Shuttle API running on port ${PORT}`);
+  console.log(` WebSocket server ready`);
+  console.log(` Scheduled tasks activated`);
 });
 
 module.exports = app;
