@@ -10,52 +10,52 @@ const STOPS = [
     {
         id: 'broadview-center',
         name: 'Broadview Center',
-        position: { lat: 42.681667, lng: -73.828333 },
+        position: { lat: 42.6828, lng: -73.8287 }, //42.68279031439063, -73.8286733070728
     },
     {
         id: 'collins-circle',
         name: 'Collins Circle',
-        position: { lat: 42.6862, lng: -73.8235 },
+        position: { lat: 42.6875, lng: -73.8223 }, //42.68752143186545, -73.82234250866232
     },
     {
         id: 'campus-center',
         name: 'Campus Center',
-        position: { lat: 42.6860, lng: -73.8215 },
+        position: { lat: 42.6850, lng: -73.8262 }, //42.685006511515496, -73.82618421713896
     },
     {
         id: 'social-science',
         name: 'Social Science',
-        position: { lat: 42.6864, lng: -73.8200 },
+        position: { lat: 42.6878, lng: -73.8266 }, //42.68767215276336, -73.82658118406533
     },
     {
         id: 'indigenous-quad',
         name: 'Indigenous Quad',
-        position: { lat: 42.6873, lng: -73.8205 },
+        position: { lat: 42.6830, lng: -73.8221 }, //42.68302889453888, -73.82213408152965
     },
     {
         id: 'empire-commons',
         name: 'Empire Commons',
-        position: { lat: 42.6840, lng: -73.8360 },
+        position: { lat: 42.6903, lng: -73.8277 }, //42.69025153201672, -73.82768278683221
     },
     {
         id: 'freedom-apartments',
         name: 'Freedom Apartments',
-        position: { lat: 42.6790, lng: -73.8335 },
+        position: { lat: 42.6898, lng: -73.8359 }, //42.68975015158865, -73.83585578601989
     },
     {
         id: 'liberty-terrace',
         name: 'Liberty Terrace',
-        position: { lat: 42.6782, lng: -73.8175 },
+        position: { lat: 42.6786, lng: -73.8205 }, //42.678606245008154, -73.82045423353111
     },
     {
         id: 'etec',
         name: 'ETEC',
-        position: { lat: 42.6795, lng: -73.8125 },
+        position: { lat: 42.6808, lng: -73.8172 }, //42.680783155319446, -73.81724362934816
     },
     {
         id: 'health-sciences-campus',
         name: 'Health Sciences Campus',
-        position: { lat: 42.6409, lng: -73.7546 },
+        position: { lat: 42.6278, lng: -73.7403 }, //42.62783994664228, -73.74029875917022
     },
 
 ];
