@@ -1,511 +1,369 @@
-/**
- * UAlbany Shuttle Live - Frontend Components
- * Example React components for the shuttle tracking system
- */
-
-import React, { useState, useEffect } from 'react';
-import io from 'socket.io-client';
+import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import { GoogleMap, Marker, useLoadScript } from '@react-google-maps/api';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+// Vite-style env (matches your .env setup)
+const API_BASE_URL =
+    import.meta.env.VITE_API_BASE_URL || 'http://localhost:5070';
 
-// Main Shuttle Tracker Component
+const mapContainerStyle = {
+    width: '100%',
+    height: '100%',
+};
+
+const DEFAULT_CENTER = { lat: 42.686, lng: -73.823 }; // Rough UAlbany campus center
+
+function haversineMeters(a, b) {
+    const R = 6371000;
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+
+    const sinDLat = Math.sin(dLat / 2);
+    const sinDLng = Math.sin(dLng / 2);
+
+    const h =
+        sinDLat * sinDLat +
+        Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+
+    const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    return R * c;
+}
+
 export const ShuttleTracker = () => {
-  const [stops, setStops] = useState([]);
-  const [routes, setRoutes] = useState([]);
-  const [vehicles, setVehicles] = useState([]);
-  const [selectedStop, setSelectedStop] = useState(null);
-  const [arrivals, setArrivals] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [socket, setSocket] = useState(null);
-
-  useEffect(() => {
-    // Initialize WebSocket connection
-    const newSocket = io(API_BASE_URL);
-    setSocket(newSocket);
-
-    // Load initial data
-    loadInitialData();
-
-    // Subscribe to real-time updates
-    newSocket.on('vehicles:update', (updatedVehicles) => {
-      setVehicles(updatedVehicles);
+    const { isLoaded, loadError } = useLoadScript({
+        googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
     });
 
-    return () => {
-      newSocket.close();
-    };
-  }, []);
+    const [stops, setStops] = useState([]);
+    const [vehicles, setVehicles] = useState([]);
+    const [selectedStopId, setSelectedStopId] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [userLocation, setUserLocation] = useState(null);
+    const [nearestStop, setNearestStop] = useState(null);
+    const [mapCenter, setMapCenter] = useState(DEFAULT_CENTER);
 
-  const loadInitialData = async () => {
-    try {
-      setLoading(true);
-      const [stopsRes, routesRes, vehiclesRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/api/stops`),
-        axios.get(`${API_BASE_URL}/api/routes`),
-        axios.get(`${API_BASE_URL}/api/vehicles`)
-      ]);
+    // --- Load stops ---
+    useEffect(() => {
+        async function loadStops() {
+            try {
+                const res = await axios.get(`${API_BASE_URL}/api/stops`);
+                const rawStops = res.data || [];
 
-      setStops(stopsRes.data.data);
-      setRoutes(routesRes.data.data);
-      setVehicles(vehiclesRes.data.data);
-    } catch (error) {
-      console.error('Error loading data:', error);
-    } finally {
-      setLoading(false);
+                // Normalize shape in case backend changed keys
+                const normalized = rawStops
+                    .map((s) => ({
+                        id: s.id || s.stopId || s._id,
+                        name: s.name || s.stopName,
+                        lat:
+                            typeof s.lat === 'number'
+                                ? s.lat
+                                : s.position?.lat ?? null,
+                        lng:
+                            typeof s.lng === 'number'
+                                ? s.lng
+                                : s.position?.lng ?? null,
+                    }))
+                    .filter((s) => s.id && s.name && s.lat && s.lng);
+
+                setStops(normalized);
+
+                if (normalized.length > 0) {
+                    // Center the map roughly on the average of all stops
+                    const avgLat =
+                        normalized.reduce((sum, s) => sum + s.lat, 0) /
+                        normalized.length;
+                    const avgLng =
+                        normalized.reduce((sum, s) => sum + s.lng, 0) /
+                        normalized.length;
+                    setMapCenter({ lat: avgLat, lng: avgLng });
+                }
+            } catch (err) {
+                console.error('Error loading stops', err);
+            }
+        }
+
+        loadStops();
+    }, []);
+
+    // --- Poll vehicles (simulated buses) ---
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadVehicles() {
+            try {
+                const res = await axios.get(`${API_BASE_URL}/api/vehicles`);
+                if (!cancelled) {
+                    const raw = res.data || [];
+                    const normalized = raw
+                        .map((v) => ({
+                            id: v.id,
+                            label: v.label || v.id,
+                            routeName: v.routeName,
+                            position: v.position,
+                            nextStopName: v.nextStopName,
+                            speedKmh: v.speedKmh,
+                            etaSeconds: v.etaSeconds,
+                        }))
+                        .filter(
+                            (v) =>
+                                v.id &&
+                                v.position &&
+                                typeof v.position.lat === 'number' &&
+                                typeof v.position.lng === 'number'
+                        );
+                    setVehicles(normalized);
+                }
+            } catch (err) {
+                console.error('Error loading vehicles', err);
+            }
+        }
+
+        loadVehicles();
+        const id = setInterval(loadVehicles, 3000); // 3s poll
+
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
+    }, []);
+
+    // --- Get user location for nearest stop ---
+    useEffect(() => {
+        if (!navigator.geolocation) {
+            console.warn('Geolocation not supported');
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const loc = {
+                    lat: pos.coords.latitude,
+                    lng: pos.coords.longitude,
+                };
+                setUserLocation(loc);
+                // If map isn't centered yet, center on user
+                setMapCenter((prev) => prev || loc);
+            },
+            (err) => {
+                console.warn('Geolocation error', err);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+            }
+        );
+    }, []);
+
+    // --- Compute nearest stop (when we have userLocation + stops) ---
+    useEffect(() => {
+        if (!userLocation || stops.length === 0) return;
+
+        let best = null;
+        let bestDistance = Infinity;
+
+        stops.forEach((stop) => {
+            const d = haversineMeters(userLocation, {
+                lat: stop.lat,
+                lng: stop.lng,
+            });
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = { ...stop, distanceMeters: d };
+            }
+        });
+
+        setNearestStop(best || null);
+    }, [userLocation, stops]);
+
+    const filteredStops = useMemo(() => {
+        const term = searchTerm.toLowerCase().trim();
+        if (!term) return stops;
+        return stops.filter((s) =>
+            s.name.toLowerCase().includes(term)
+        );
+    }, [stops, searchTerm]);
+
+    const selectedStop = useMemo(
+        () => stops.find((s) => s.id === selectedStopId),
+        [stops, selectedStopId]
+    );
+
+    if (loadError) {
+        return <div>Failed to load Google Maps.</div>;
     }
-  };
 
-  const handleStopSelect = async (stop) => {
-    setSelectedStop(stop);
-    
-    // Subscribe to stop updates via WebSocket
-    if (socket) {
-      socket.emit('subscribe:stop', stop.stopId);
+    if (!isLoaded) {
+        return <div>Loading map…</div>;
     }
 
-    // Load arrivals for this stop
-    try {
-      const response = await axios.get(
-        `${API_BASE_URL}/api/arrivals/${stop.stopId}`
-      );
-      setArrivals(response.data.data);
-    } catch (error) {
-      console.error('Error loading arrivals:', error);
-      setArrivals([]);
-    }
-  };
+    return (
+        <div className="shuttle-tracker">
+            {/* Header */}
+            <header className="header">
+                <div className="header-content">
+                    <h1>UAlbany Shuttle Live</h1>
+                    <p>Mock shuttle tracker with live simulation on campus.</p>
+                </div>
+            </header>
 
-  if (loading) {
-    return <LoadingScreen />;
-  }
+            {/* Main layout */}
+            <main className="main-content">
+                <div className="layout">
+                    {/* Left: controls + stop list */}
+                    <section className="panel left-panel">
+                        {/* Nearest stop */}
+                        <div className="card">
+                            <h2>Nearest Shuttle Stop</h2>
+                            {nearestStop ? (
+                                <p>
+                                    <strong>{nearestStop.name}</strong>
+                                    <br />
+                                    <span style={{ fontSize: '0.9rem', opacity: 0.8 }}>
+                    ~
+                                        {nearestStop.distanceMeters > 1000
+                                            ? `${(nearestStop.distanceMeters / 1000).toFixed(
+                                                1
+                                            )} km`
+                                            : `${nearestStop.distanceMeters.toFixed(0)} m`}{' '}
+                                        from your location
+                  </span>
+                                </p>
+                            ) : (
+                                <p style={{ fontSize: '0.9rem', opacity: 0.8 }}>
+                                    Turn on location to see your closest shuttle pickup
+                                    stop.
+                                </p>
+                            )}
+                        </div>
 
-  return (
-    <div className="shuttle-tracker">
-      <Header />
-      <div className="container">
-        <div className="sidebar">
-          <StopSelector 
-            stops={stops} 
-            onSelectStop={handleStopSelect}
-            selectedStop={selectedStop}
-          />
-          <RouteList routes={routes} />
+                        {/* Stop search + list */}
+                        <div className="card">
+                            <h2>Shuttle Stops</h2>
+                            <input
+                                type="text"
+                                placeholder="Search stops…"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="search-input"
+                            />
+                            <div className="stops-list">
+                                {filteredStops.map((stop) => (
+                                    <div
+                                        key={stop.id}
+                                        className={`stop-item ${
+                                            selectedStopId === stop.id ? 'selected' : ''
+                                        }`}
+                                        onClick={() => setSelectedStopId(stop.id)}
+                                    >
+                                        <div className="stop-name">{stop.name}</div>
+                                        <div className="stop-meta">Tap to highlight on map</div>
+                                    </div>
+                                ))}
+                                {filteredStops.length === 0 && (
+                                    <div className="empty-state">
+                                        No stops match your search.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Vehicles list (for reference) */}
+                        <div className="card">
+                            <h2>Shuttles In Service (Simulated)</h2>
+                            {vehicles.length === 0 && (
+                                <div className="empty-state">
+                                    No shuttles visible yet.
+                                </div>
+                            )}
+                            <div className="vehicles-list">
+                                {vehicles.map((v) => (
+                                    <div key={v.id} className="vehicle-item">
+                                        <div className="vehicle-main">
+                      <span className="vehicle-label">
+                        🚌 {v.label}
+                      </span>
+                                            <span className="vehicle-route">
+                        {v.routeName}
+                      </span>
+                                        </div>
+                                        <div className="vehicle-meta">
+                                            Next: {v.nextStopName || '—'} · ETA:{' '}
+                                            {typeof v.etaSeconds === 'number'
+                                                ? `${Math.round(v.etaSeconds / 60)} min`
+                                                : '—'}{' '}
+                                            · Speed: {v.speedKmh || 20} mph
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* Right: Map */}
+                    <section className="panel map-panel">
+                        <GoogleMap
+                            mapContainerStyle={mapContainerStyle}
+                            center={mapCenter}
+                            zoom={14}
+                            options={{
+                                disableDefaultUI: true,
+                                fullscreenControl: false,
+                                streetViewControl: false,
+                                mapTypeControl: false,
+                            }}
+                        >
+                            {/* User location */}
+                            {userLocation && (
+                                <Marker
+                                    position={userLocation}
+                                    label={{
+                                        text: 'You',
+                                        fontSize: '10px',
+                                        color: '#ffffff',
+                                    }}
+                                />
+                            )}
+
+                            {/* Stops */}
+                            {stops.map((stop) => (
+                                <Marker
+                                    key={stop.id}
+                                    position={{ lat: stop.lat, lng: stop.lng }}
+                                    onClick={() => setSelectedStopId(stop.id)}
+                                    label={
+                                        selectedStopId === stop.id
+                                            ? {
+                                                text: stop.name,
+                                                fontSize: '10px',
+                                            }
+                                            : undefined
+                                    }
+                                />
+                            ))}
+
+                            {/* Bus markers (simulated vehicles) */}
+                            {vehicles.map((v) => (
+                                <Marker
+                                    key={v.id}
+                                    position={{
+                                        lat: v.position.lat,
+                                        lng: v.position.lng,
+                                    }}
+                                    label={{
+                                        text: '🚌',
+                                        fontSize: '20px',
+                                    }}
+                                />
+                            ))}
+                        </GoogleMap>
+                    </section>
+                </div>
+            </main>
         </div>
-        <div className="main-content">
-          <Map 
-            stops={stops} 
-            vehicles={vehicles} 
-            selectedStop={selectedStop}
-          />
-          {selectedStop && (
-            <ArrivalBoard 
-              stop={selectedStop} 
-              arrivals={arrivals}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
+    );
 };
-
-// Header Component
-const Header = () => {
-  return (
-    <header className="header">
-      <div className="header-content">
-        <h1>🚌 UAlbany Shuttle Live</h1>
-        <div className="header-info">
-          <span className="status-indicator">● Live</span>
-          <span className="current-time">
-            {new Date().toLocaleTimeString()}
-          </span>
-        </div>
-      </div>
-    </header>
-  );
-};
-
-// Stop Selector Component
-const StopSelector = ({ stops, onSelectStop, selectedStop }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-
-  const filteredStops = stops.filter(stop =>
-    stop.stopName.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  return (
-    <div className="stop-selector">
-      <h2>Shuttle Stops</h2>
-      <input
-        type="text"
-        placeholder="Search stops..."
-        value={searchTerm}
-        onChange={(e) => setSearchTerm(e.target.value)}
-        className="search-input"
-      />
-      <div className="stops-list">
-        {filteredStops.map(stop => (
-          <div
-            key={stop.stopId}
-            className={`stop-item ${selectedStop?.stopId === stop.stopId ? 'selected' : ''}`}
-            onClick={() => onSelectStop(stop)}
-          >
-            <span className="stop-name">{stop.stopName}</span>
-            {stop.amenities?.shelter && <span className="amenity-icon">🏠</span>}
-            {stop.amenities?.accessible && <span className="amenity-icon">♿</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-// Route List Component
-const RouteList = ({ routes }) => {
-  return (
-    <div className="route-list">
-      <h2>Active Routes</h2>
-      <div className="routes">
-        {routes.map(route => (
-          <div key={route.routeId} className="route-item">
-            <div 
-              className="route-color" 
-              style={{ backgroundColor: route.color || '#512B81' }}
-            />
-            <div className="route-info">
-              <span className="route-name">{route.routeName}</span>
-              <span className="route-stops">{route.stops?.length || 0} stops</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-// Arrival Board Component
-const ArrivalBoard = ({ stop, arrivals }) => {
-  const formatArrivalTime = (arrival) => {
-    const now = new Date();
-    const arrivalTime = new Date(arrival.estimatedArrival);
-    const diffMinutes = Math.round((arrivalTime - now) / 60000);
-    
-    if (diffMinutes <= 0) return 'Arriving';
-    if (diffMinutes === 1) return '1 min';
-    return `${diffMinutes} mins`;
-  };
-
-  const getCrowdingIcon = (level) => {
-    switch(level) {
-      case 'low': return '🟢';
-      case 'medium': return '🟡';
-      case 'high': return '🔴';
-      default: return '⚪';
-    }
-  };
-
-  return (
-    <div className="arrival-board">
-      <h2>Next Arrivals at {stop.stopName}</h2>
-      {arrivals.length === 0 ? (
-        <div className="no-arrivals">
-          <p>No shuttles scheduled in the next 30 minutes</p>
-        </div>
-      ) : (
-        <div className="arrivals-list">
-          {arrivals.map((arrival, index) => (
-            <div key={index} className="arrival-item">
-              <div className="arrival-route">{arrival.routeId}</div>
-              <div className="arrival-time">{formatArrivalTime(arrival)}</div>
-              <div className="arrival-crowding">
-                {getCrowdingIcon(arrival.crowdingLevel)}
-              </div>
-              {arrival.delay > 0 && (
-                <span className="delay-indicator">+{arrival.delay}min</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Simple Map Component (placeholder - would use Google Maps or Mapbox)
-const Map = ({ stops, vehicles, selectedStop }) => {
-  return (
-    <div className="map-container">
-      <div className="map-placeholder">
-        <h3>Interactive Map</h3>
-        <p>Showing {vehicles.length} active shuttles</p>
-        {selectedStop && (
-          <p>Selected: {selectedStop.stopName}</p>
-        )}
-        <div className="map-legend">
-          <span>🚌 Active Shuttle</span>
-          <span>📍 Stop</span>
-          <span>⭐ Selected Stop</span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Loading Screen Component
-const LoadingScreen = () => {
-  return (
-    <div className="loading-screen">
-      <div className="loading-content">
-        <div className="spinner"></div>
-        <h2>Loading UAlbany Shuttle Data...</h2>
-      </div>
-    </div>
-  );
-};
-
-// CSS Styles (would typically be in separate .css file)
-export const styles = `
-.shuttle-tracker {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  min-height: 100vh;
-  background-color: #f5f5f5;
-}
-
-.header {
-  background: linear-gradient(135deg, #512B81 0%, #FDB813 100%);
-  color: white;
-  padding: 1rem 2rem;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.header-content {
-  max-width: 1400px;
-  margin: 0 auto;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header h1 {
-  margin: 0;
-  font-size: 1.8rem;
-}
-
-.header-info {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.status-indicator {
-  color: #4CAF50;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
-}
-
-.container {
-  max-width: 1400px;
-  margin: 2rem auto;
-  display: grid;
-  grid-template-columns: 350px 1fr;
-  gap: 2rem;
-  padding: 0 2rem;
-}
-
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.stop-selector, .route-list, .arrival-board {
-  background: white;
-  border-radius: 8px;
-  padding: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-.stop-selector h2, .route-list h2, .arrival-board h2 {
-  margin: 0 0 1rem 0;
-  color: #512B81;
-  font-size: 1.3rem;
-}
-
-.search-input {
-  width: 100%;
-  padding: 0.75rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  margin-bottom: 1rem;
-  font-size: 1rem;
-}
-
-.stops-list {
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-.stop-item {
-  padding: 0.75rem;
-  border-left: 3px solid transparent;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.stop-item:hover {
-  background-color: #f8f8f8;
-  border-left-color: #FDB813;
-}
-
-.stop-item.selected {
-  background-color: #512B81;
-  color: white;
-  border-left-color: #FDB813;
-}
-
-.amenity-icon {
-  margin-left: 0.5rem;
-}
-
-.route-item {
-  display: flex;
-  align-items: center;
-  padding: 0.75rem 0;
-  border-bottom: 1px solid #eee;
-}
-
-.route-color {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  margin-right: 1rem;
-}
-
-.route-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.route-name {
-  font-weight: 500;
-}
-
-.route-stops {
-  font-size: 0.85rem;
-  color: #666;
-}
-
-.arrivals-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.arrival-item {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: center;
-  padding: 1rem;
-  background: #f8f8f8;
-  border-radius: 4px;
-  gap: 1rem;
-}
-
-.arrival-route {
-  font-weight: 500;
-}
-
-.arrival-time {
-  font-size: 1.2rem;
-  color: #512B81;
-  font-weight: 600;
-}
-
-.delay-indicator {
-  font-size: 0.85rem;
-  color: #ff6b6b;
-  background: #ffe0e0;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-}
-
-.map-container {
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  height: 500px;
-}
-
-.map-placeholder {
-  padding: 2rem;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  height: 100%;
-}
-
-.map-legend {
-  display: flex;
-  justify-content: center;
-  gap: 2rem;
-  margin-top: 2rem;
-  padding-top: 2rem;
-  border-top: 1px solid #eee;
-}
-
-.loading-screen {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
-  background: linear-gradient(135deg, #512B81 0%, #FDB813 100%);
-}
-
-.loading-content {
-  text-align: center;
-  color: white;
-}
-
-.spinner {
-  width: 50px;
-  height: 50px;
-  border: 5px solid rgba(255,255,255,0.3);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin: 0 auto 2rem;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.no-arrivals {
-  padding: 2rem;
-  text-align: center;
-  color: #666;
-}
-
-@media (max-width: 768px) {
-  .container {
-    grid-template-columns: 1fr;
-  }
-  
-  .stops-list {
-    max-height: 200px;
-  }
-}
-`;
 
 export default ShuttleTracker;
