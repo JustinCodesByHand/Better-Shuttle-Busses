@@ -248,7 +248,12 @@ function start() {
 
 // Public: get stops
 function getStops() {
-    return STOPS;
+    return STOPS.map((s) => ({
+        stopId: s.id,
+        name: s.name,
+        lat: s.position.lat,
+        lng: s.position.lng,
+    }));
 }
 
 // Public: get current vehicle snapshot (with computed positions + ETA to next stop)
