@@ -5,10 +5,10 @@ const User = require('../models/User');
 
 const router = express.Router();
 
-// Helper: require @ualbany.edu email
+// Helper: require @albany.edu email
 function isUAlbanyEmail(email) {
     if (!email) return false;
-    return email.toLowerCase().endsWith('@ualbany.edu');
+    return email.toLowerCase().endsWith('@albany.edu');
 }
 
 router.post('/signup', async (req, res) => {
@@ -22,7 +22,7 @@ router.post('/signup', async (req, res) => {
         if (!isUAlbanyEmail(email)) {
             return res
                 .status(400)
-                .json({ message: 'Please use a valid UAlbany email ending in @ualbany.edu.' });
+                .json({ message: 'Please use a valid UAlbany email ending in @albany.edu.' });
         }
 
         const existing = await User.findOne({ email: email.toLowerCase() });
@@ -73,7 +73,7 @@ router.post('/login', async (req, res) => {
 
         if (!isUAlbanyEmail(user.email)) {
             // Just in case an old user exists somehow
-            return res.status(400).json({ message: 'Account is not associated with ualbany.edu.' });
+            return res.status(400).json({ message: 'Account is not associated with albany.edu.' });
         }
 
         const match = await bcrypt.compare(password, user.passwordHash);
