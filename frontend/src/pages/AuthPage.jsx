@@ -31,9 +31,9 @@ export default function AuthPage() {
                     password: form.password,
                 };
 
-                // quick front-end check for @ualbany.edu
-                if (!payload.email.toLowerCase().endsWith('@ualbany.edu')) {
-                    setError('Please use a UAlbany email ending in @ualbany.edu.');
+                // quick front-end check for @albany.edu
+                if (!payload.email.toLowerCase().endsWith('@albany.edu')) {
+                    setError('Please use a UAlbany email ending in @albany.edu.');
                     setLoading(false);
                     return;
                 }
@@ -80,7 +80,7 @@ export default function AuthPage() {
                                     required
                                     value={form.firstName}
                                     onChange={updateField('firstName')}
-                                    placeholder="Florian"
+                                    placeholder="First name"
                                 />
                             </div>
                             <div className="auth-field">
@@ -90,7 +90,7 @@ export default function AuthPage() {
                                     required
                                     value={form.lastName}
                                     onChange={updateField('lastName')}
-                                    placeholder="Charles"
+                                    placeholder="Last name"
                                 />
                             </div>
                         </div>
@@ -103,7 +103,7 @@ export default function AuthPage() {
                             required
                             value={form.email}
                             onChange={updateField('email')}
-                            placeholder="example@ualbany.edu"
+                            placeholder="example@albany.edu"
                         />
                     </div>
 
