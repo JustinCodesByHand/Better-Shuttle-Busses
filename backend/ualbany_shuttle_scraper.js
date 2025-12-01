@@ -4,4 +4,4 @@
  * to pull live schedule & stop data from the UAlbany shuttle site.
  */
 
-console.log('Shuttle scraper placeholder. Implement scraping logic here if needed.');
+console.log('Shuttle scraper placeholder. Implement scraping logic here in a completed app we would need.');
