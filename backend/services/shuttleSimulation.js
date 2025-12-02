@@ -6,6 +6,7 @@
 
 // Approximate coordinates for UAlbany shuttle stops.
 // These are good enough for a mock tracker demo. You can refine lat/lng later if needed.
+
 const STOPS = [
     {
         id: 'broadview-center',
@@ -57,7 +58,6 @@ const STOPS = [
         name: 'Health Sciences Campus',
         position: { lat: 42.6278, lng: -73.7403 }, //42.62783994664228, -73.74029875917022
     },
-
 ];
 
 // Helper to lookup stop by id
@@ -67,10 +67,12 @@ const STOP_BY_ID = STOPS.reduce((acc, stop) => {
 }, {});
 
 // --------------------------------------
-// Vehicle simulation (simple fake GPS)
+// Vehicle simulation (fake live GPS)
 // --------------------------------------
 
 const UPDATE_INTERVAL_MS = 2000; // how often we advance the simulation
+const DWELL_MS = 60_000; // 1 minute dwell at each stop
+
 let lastUpdate = Date.now();
 let lastSyncTime = new Date();
 
@@ -114,39 +116,35 @@ const ROUTES = [
             'collins-circle',
             'etec',
             'health-sciences-campus',
-            'draper-hall',
+            // note: draper-hall not defined in STOPS; not used for active vehicles
             'campus-center',
         ],
     },
 ];
 
-// Vehicles state: each vehicle travels along one of the routes above.
+// Two vehicles: Purple Line + Gold Line
+// speedKmh is treated as **mph** for UI, we convert to m/s with mph→m/s factor.
 const vehicles = [
     {
         id: 'shuttle-1',
         label: 'Shuttle 1',
         routeId: 'purple-line',
-        currentSegmentIndex: 0, // index in route stops array
+        currentSegmentIndex: 0, // index in route stops array (from-stop)
         progress: 0, // 0..1 along segment
-        speedKmh: 18, // ~campus bus speed
+        speedKmh: 20, // shown as 20 mph in UI
+        state: 'dwelling', // 'dwelling' or 'moving'
+        dwellMsRemaining: DWELL_MS,
         lastSeen: new Date(),
     },
     {
         id: 'shuttle-2',
         label: 'Shuttle 2',
         routeId: 'gold-line',
-        currentSegmentIndex: 1,
-        progress: 0.35,
-        speedKmh: 22,
-        lastSeen: new Date(),
-    },
-    {
-        id: 'shuttle-3',
-        label: 'Shuttle 3',
-        routeId: 'downtown-link',
-        currentSegmentIndex: 2,
-        progress: 0.7,
-        speedKmh: 30,
+        currentSegmentIndex: 0,
+        progress: 0.2, // start partway along first segment
+        speedKmh: 20,
+        state: 'moving',
+        dwellMsRemaining: 0,
         lastSeen: new Date(),
     },
 ];
@@ -185,7 +183,7 @@ function getRouteById(routeId) {
     return ROUTES.find((r) => r.id === routeId);
 }
 
-// Advance a single vehicle along its route
+// Advance a single vehicle along its route, with 1 min dwell at each stop
 function stepVehicle(vehicle, dtMs) {
     const route = getRouteById(vehicle.routeId);
     if (!route || route.stops.length < 2) return vehicle;
@@ -198,29 +196,65 @@ function stepVehicle(vehicle, dtMs) {
 
     if (!fromStop || !toStop) return vehicle;
 
+    // DWELLING at a stop
+    if (vehicle.state === 'dwelling') {
+        const remaining = (vehicle.dwellMsRemaining ?? DWELL_MS) - dtMs;
+
+        if (remaining > 0) {
+            return {
+                ...vehicle,
+                dwellMsRemaining: remaining,
+                progress: 0,
+                lastSeen: new Date(),
+            };
+        }
+
+        // Finished dwelling → start moving towards next stop
+        return {
+            ...vehicle,
+            state: 'moving',
+            dwellMsRemaining: 0,
+            progress: 0,
+            lastSeen: new Date(),
+        };
+    }
+
+    // MOVING between stops
     const segmentDistance = haversineMeters(
         fromStop.position,
         toStop.position
     );
 
-    // speed m/s
-    const speedMs = (vehicle.speedKmh * 1000) / 3600;
-    // how much of the segment we traverse in dt
+    // Treat speedKmh as mph for UI, convert mph → m/s
+    const speedMs = vehicle.speedKmh * 0.44704; // 20 mph ≈ 8.94 m/s
+
     const deltaProgress =
-        segmentDistance > 0 ? (speedMs * dtMs) / (segmentDistance * 1000) : 0;
+        segmentDistance > 0
+            ? (speedMs * dtMs) / (segmentDistance * 1000) // dtMs→s via /1000
+            : 0;
 
-    let newProgress = vehicle.progress + deltaProgress;
+    let newProgress = (vehicle.progress ?? 0) + deltaProgress;
 
-    let currentSegmentIndex = fromIndex;
-    while (newProgress >= 1) {
-        newProgress -= 1;
-        currentSegmentIndex = (currentSegmentIndex + 1) % route.stops.length;
+    if (newProgress >= 1) {
+        // Arrived at the next stop → snap to it and start dwell
+        const newIndex = toIndex;
+
+        return {
+            ...vehicle,
+            currentSegmentIndex: newIndex,
+            progress: 0,
+            state: 'dwelling',
+            dwellMsRemaining: DWELL_MS,
+            lastSeen: new Date(),
+        };
     }
 
+    // Still en route
     return {
         ...vehicle,
-        currentSegmentIndex: currentSegmentIndex,
         progress: newProgress,
+        state: 'moving',
+        dwellMsRemaining: 0,
         lastSeen: new Date(),
     };
 }
@@ -268,21 +302,36 @@ function getVehicles() {
         const toStop = STOP_BY_ID[route.stops[toIndex]];
         if (!fromStop || !toStop) return v;
 
-        const position = lerpPosition(
-            fromStop.position,
-            toStop.position,
-            v.progress
-        );
+        let position;
+        let etaSeconds = null;
 
-        // Rough ETA to next stop
-        const segmentDistance = haversineMeters(
-            fromStop.position,
-            toStop.position
-        );
-        const remainingDistance = segmentDistance * (1 - v.progress);
-        const speedMs = (v.speedKmh * 1000) / 3600;
-        const etaSeconds =
-            speedMs > 0 ? Math.round(remainingDistance / speedMs) : null;
+        if (v.state === 'dwelling') {
+            // Bus is parked at the current stop
+            position = {
+                lat: fromStop.position.lat,
+                lng: fromStop.position.lng,
+            };
+            etaSeconds = 0;
+        } else {
+            // En route → interpolate
+            position = lerpPosition(
+                fromStop.position,
+                toStop.position,
+                v.progress
+            );
+
+            const segmentDistance = haversineMeters(
+                fromStop.position,
+                toStop.position
+            );
+            const remainingDistance =
+                segmentDistance * (1 - (v.progress ?? 0));
+            const speedMs = v.speedKmh * 0.44704;
+            etaSeconds =
+                speedMs > 0
+                    ? Math.round(remainingDistance / speedMs)
+                    : null;
+        }
 
         return {
             id: v.id,
@@ -293,8 +342,9 @@ function getVehicles() {
             position,
             nextStopId: toStop.id,
             nextStopName: toStop.name,
-            speedKmh: v.speedKmh,
+            speedKmh: v.speedKmh, // interpreted as mph in UI
             etaSeconds,
+            state: v.state,
             lastSeen: v.lastSeen,
         };
     });
